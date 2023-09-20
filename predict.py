@@ -7,7 +7,6 @@ import time
 import cv2
 import numpy as np
 from PIL import Image
-
 from deeplab import DeeplabV3
 
 if __name__ == "__main__":
@@ -23,7 +22,7 @@ if __name__ == "__main__":
     #   'dir_predict'       表示遍历文件夹进行检测并保存。默认遍历img文件夹，保存img_out文件夹，详情查看下方注释。
     #   'export_onnx'       表示将模型导出为onnx，需要pytorch1.7.1以上。
     #----------------------------------------------------------------------------------------------------------#
-    mode = "predict"
+    mode = "fps"
     #-------------------------------------------------------------------------#
     #   count               指定了是否进行目标的像素点计数（即面积）与比例计算
     #   name_classes        区分的种类，和json_to_dataset里面的一样，用于打印种类和数量
@@ -31,7 +30,8 @@ if __name__ == "__main__":
     #   count、name_classes仅在mode='predict'时有效
     #-------------------------------------------------------------------------#
     count           = False
-    name_classes    = ["background","aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair", "cow", "diningtable", "dog", "horse", "motorbike", "person", "pottedplant", "sheep", "sofa", "train", "tvmonitor"]
+    name_classes    = ["background","aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair", 
+                       "cow", "diningtable", "dog", "horse", "motorbike", "person", "pottedplant", "sheep", "sofa", "train", "tvmonitor"]
     # name_classes    = ["background","cat","dog"]
     #----------------------------------------------------------------------------------------------------------#
     #   video_path          用于指定视频的路径，当video_path=0时表示检测摄像头
@@ -43,8 +43,8 @@ if __name__ == "__main__":
     #   video_path、video_save_path和video_fps仅在mode='video'时有效
     #   保存视频时需要ctrl+c退出或者运行到最后一帧才会完成完整的保存步骤。
     #----------------------------------------------------------------------------------------------------------#
-    video_path      = 0
-    video_save_path = ""
+    video_path      = "input_vid/IMG_6956.mp4"
+    video_save_path = "result_vid/nycu.mp4"
     video_fps       = 25.0
     #----------------------------------------------------------------------------------------------------------#
     #   test_interval       用于指定测量fps的时候，图片检测的次数。理论上test_interval越大，fps越准确。
@@ -95,6 +95,7 @@ if __name__ == "__main__":
                 r_image.show()
 
     elif mode == "video":
+        fps_arr = []
         capture=cv2.VideoCapture(video_path)
         if video_save_path!="":
             fourcc = cv2.VideoWriter_fourcc(*'XVID')
@@ -122,7 +123,8 @@ if __name__ == "__main__":
             frame = cv2.cvtColor(frame,cv2.COLOR_RGB2BGR)
             
             fps  = ( fps + (1./(time.time()-t1)) ) / 2
-            print("fps= %.2f"%(fps))
+            # print("fps= %.2f"%(fps))
+            fps_arr.append(fps)
             frame = cv2.putText(frame, "fps= %.2f"%(fps), (0, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
             
             cv2.imshow("video",frame)
@@ -134,7 +136,12 @@ if __name__ == "__main__":
                 capture.release()
                 break
         print("Video Detection Done!")
+
         capture.release()
+
+        # print the mean fps
+        mean_fps = np.mean(fps_arr)
+        print("mean fps= %.2f"%(mean_fps))
         if video_save_path!="":
             print("Save processed video to the path :" + video_save_path)
             out.release()
