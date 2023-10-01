@@ -25,8 +25,8 @@ class DeeplabV3(object):
         #   训练好后logs文件夹下存在多个权值文件，选择验证集损失较低的即可。
         #   验证集损失较低不代表miou较高，仅代表该权值在验证集上泛化性能较好。
         #-------------------------------------------------------------------#
-        # "model_path"        : 'model_data/deeplab_mobilenetv2.pth',
-        "model_path"        : 'model_data/deeplab_xception.pth',
+        "model_path"        : 'model_data/deeplab_mobilenetv2.pth',
+        # "model_path"        : 'model_data/deeplab_xception.pth',
         #----------------------------------------#
         #   所需要区分的类的个数+1
         #----------------------------------------#
@@ -36,7 +36,7 @@ class DeeplabV3(object):
         #   mobilenet
         #   xception    
         #----------------------------------------#
-        "backbone"          : "xception",
+        "backbone"          : "mobilenet",
         #----------------------------------------#
         #   输入图片的大小
         #----------------------------------------#
@@ -125,6 +125,7 @@ class DeeplabV3(object):
         #   也可以直接resize进行识别
         #---------------------------------------------------------#
         image_data, nw, nh  = resize_image(image, (self.input_shape[1],self.input_shape[0]))
+        # image_data.show()
         #---------------------------------------------------------#
         #   添加上batch_size维度
         #---------------------------------------------------------#
@@ -139,23 +140,30 @@ class DeeplabV3(object):
             #   图片传入网络进行预测
             #---------------------------------------------------#
             pr = self.net(images)[0]
+            print(pr.shape)
+            if isinstance(pr, torch.Tensor):
+                print("Variable is a torch tensor")    
             #---------------------------------------------------#
             #   取出每一个像素点的种类
             #---------------------------------------------------#
             pr = F.softmax(pr.permute(1,2,0),dim = -1).cpu().numpy()
+            print(pr.shape)
             #--------------------------------------#
             #   将灰条部分截取掉
             #--------------------------------------#
             pr = pr[int((self.input_shape[0] - nh) // 2) : int((self.input_shape[0] - nh) // 2 + nh), \
                     int((self.input_shape[1] - nw) // 2) : int((self.input_shape[1] - nw) // 2 + nw)]
+            print(pr.shape)
             #---------------------------------------------------#
             #   进行图片的resize
             #---------------------------------------------------#
             pr = cv2.resize(pr, (orininal_w, orininal_h), interpolation = cv2.INTER_LINEAR)
+            print(sum(pr))
             #---------------------------------------------------#
             #   取出每一个像素点的种类
             #---------------------------------------------------#
             pr = pr.argmax(axis=-1)
+            print(pr.shape)
         
         #---------------------------------------------------------#
         #   计数
@@ -176,12 +184,12 @@ class DeeplabV3(object):
             print("classes_nums:", classes_nums)
     
         if self.mix_type == 0:
-            # seg_img = np.zeros((np.shape(pr)[0], np.shape(pr)[1], 3))
-            # for c in range(self.num_classes):
-            #     seg_img[:, :, 0] += ((pr[:, :] == c ) * self.colors[c][0]).astype('uint8')
-            #     seg_img[:, :, 1] += ((pr[:, :] == c ) * self.colors[c][1]).astype('uint8')
-            #     seg_img[:, :, 2] += ((pr[:, :] == c ) * self.colors[c][2]).astype('uint8')
-            seg_img = np.reshape(np.array(self.colors, np.uint8)[np.reshape(pr, [-1])], [orininal_h, orininal_w, -1])
+            seg_img = np.zeros((np.shape(pr)[0], np.shape(pr)[1], 3))
+            for c in range(self.num_classes):
+                seg_img[:, :, 0] += ((pr[:, :] == c ) * self.colors[c][0]).astype('uint8')
+                seg_img[:, :, 1] += ((pr[:, :] == c ) * self.colors[c][1]).astype('uint8')
+                seg_img[:, :, 2] += ((pr[:, :] == c ) * self.colors[c][2]).astype('uint8')
+            # seg_img = np.reshape(np.array(self.colors, np.uint8)[np.reshape(pr, [-1])], [orininal_h, orininal_w, -1])
             #------------------------------------------------#
             #   将新图片转换成Image的形式
             #------------------------------------------------#
@@ -192,12 +200,12 @@ class DeeplabV3(object):
             image   = Image.blend(old_img, image, 0.7)
 
         elif self.mix_type == 1:
-            # seg_img = np.zeros((np.shape(pr)[0], np.shape(pr)[1], 3))
-            # for c in range(self.num_classes):
-            #     seg_img[:, :, 0] += ((pr[:, :] == c ) * self.colors[c][0]).astype('uint8')
-            #     seg_img[:, :, 1] += ((pr[:, :] == c ) * self.colors[c][1]).astype('uint8')
-            #     seg_img[:, :, 2] += ((pr[:, :] == c ) * self.colors[c][2]).astype('uint8')
-            seg_img = np.reshape(np.array(self.colors, np.uint8)[np.reshape(pr, [-1])], [orininal_h, orininal_w, -1])
+            seg_img = np.zeros((np.shape(pr)[0], np.shape(pr)[1], 3))
+            for c in range(self.num_classes):
+                seg_img[:, :, 0] += ((pr[:, :] == c ) * self.colors[c][0]).astype('uint8')
+                seg_img[:, :, 1] += ((pr[:, :] == c ) * self.colors[c][1]).astype('uint8')
+                seg_img[:, :, 2] += ((pr[:, :] == c ) * self.colors[c][2]).astype('uint8')
+            # seg_img = np.reshape(np.array(self.colors, np.uint8)[np.reshape(pr, [-1])], [orininal_h, orininal_w, -1])
             #------------------------------------------------#
             #   将新图片转换成Image的形式
             #------------------------------------------------#

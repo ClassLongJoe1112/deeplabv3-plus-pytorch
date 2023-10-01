@@ -138,3 +138,7 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# ignore the videos
+/input_vid
+/result_vid

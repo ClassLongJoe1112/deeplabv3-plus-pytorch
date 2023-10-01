@@ -1,31 +1,77 @@
 #----------------------------------------------------#
 #   将单张图片预测、摄像头检测和FPS测试功能
-#   整合到了一个py文件中，通过指定mode进行模式的修改。
+#   整合到了一个py文件中, 通过指定mode进行模式的修改。
 #----------------------------------------------------#
 import time
+import copy
 
 import cv2
 import numpy as np
 from PIL import Image
 from deeplab import DeeplabV3
 
+import onnx
+import onnxruntime as rt
+
+import tensorrt as trt
+import pycuda.driver as cuda
+
+import torch
+import torch.nn.functional as F
+import torchvision.transforms as T
+from torch2trt import TRTModule
+
+from utils.utils import cvtColor, resize_image, preprocess_input
+
+def output2image(out):
+        colors = [ (0, 0, 0), (128, 0, 0), (0, 128, 0), (128, 128, 0), (0, 0, 128), (128, 0, 128), (0, 128, 128), 
+                    (128, 128, 128), (64, 0, 0), (192, 0, 0), (64, 128, 0), (192, 128, 0), (64, 0, 128), (192, 0, 128), 
+                    (64, 128, 128), (192, 128, 128), (0, 64, 0), (128, 64, 0), (0, 192, 0), (128, 192, 0), (0, 64, 128), 
+                    (128, 64, 12)]
+        # convert out into torch tensor type
+        if not isinstance(out, torch.Tensor):
+            out = torch.from_numpy(out)
+        out = out.squeeze(0) # (21, 512, 512)
+        out = F.softmax(out.permute(1,2,0), dim=-1).cpu().numpy() # (512, 512, 21)
+        print(out.shape)
+        out = cv2.resize(out, (512, 512), interpolation = cv2.INTER_LINEAR)
+        # print(out[100, 100, :])
+        out = out.argmax(axis=-1) # (512, 512)
+        # print(sum(out)) # all 0?
+        seg_img = np.zeros((np.shape(out)[0], np.shape(out)[1], 3))
+
+        
+        for c in range(21):
+            seg_img[:, :, 0] += ((out[:, :] == c ) * colors[c][0]).astype('uint8')
+            seg_img[:, :, 1] += ((out[:, :] == c ) * colors[c][1]).astype('uint8')
+            seg_img[:, :, 2] += ((out[:, :] == c ) * colors[c][2]).astype('uint8')
+        # seg_img = np.reshape(np.array(colors, np.uint8)[np.reshape(out, [-1])], [512, 512, -1])
+
+        seg_mask = Image.fromarray(np.uint8(seg_img))
+        # seg_mask.show()
+        # image   = Image.blend(old_img, seg_mask, 0.7)
+        # image.show()
+        return seg_mask
+
 if __name__ == "__main__":
     #-------------------------------------------------------------------------#
-    #   如果想要修改对应种类的颜色，到__init__函数里修改self.colors即可
+    #   如果想要修改对应种类的颜色, 到__init__函数里修改self.colors即可
     #-------------------------------------------------------------------------#
     deeplab = DeeplabV3()
     #----------------------------------------------------------------------------------------------------------#
     #   mode用于指定测试的模式：
-    #   'predict'           表示单张图片预测，如果想对预测过程进行修改，如保存图片，截取对象等，可以先看下方详细的注释
-    #   'video'             表示视频检测，可调用摄像头或者视频进行检测，详情查看下方注释。
-    #   'fps'               表示测试fps，使用的图片是img里面的street.jpg，详情查看下方注释。
-    #   'dir_predict'       表示遍历文件夹进行检测并保存。默认遍历img文件夹，保存img_out文件夹，详情查看下方注释。
-    #   'export_onnx'       表示将模型导出为onnx，需要pytorch1.7.1以上。
+    #   'predict'           表示单张图片预测, 如果想对预测过程进行修改, 如保存图片, 截取对象等, 可以先看下方详细的注释
+    #   'video'             表示视频检测, 可调用摄像头或者视频进行检测, 详情查看下方注释。
+    #   'fps'               表示测试fps, 使用的图片是img里面的street.jpg, 详情查看下方注释。
+    #   'dir_predict'       表示遍历文件夹进行检测并保存。默认遍历img文件夹, 保存img_out文件夹, 详情查看下方注释。
+    #   'export_onnx'       表示将模型导出为onnx, 需要pytorch1.7.1以上。
     #----------------------------------------------------------------------------------------------------------#
-    mode = "fps"
+    # mode = "predict"
+    # mode = "predict_with_onnx"
+    mode = "predict_with_tensorrt"
     #-------------------------------------------------------------------------#
     #   count               指定了是否进行目标的像素点计数（即面积）与比例计算
-    #   name_classes        区分的种类，和json_to_dataset里面的一样，用于打印种类和数量
+    #   name_classes        区分的种类, 和json_to_dataset里面的一样, 用于打印种类和数量
     #
     #   count、name_classes仅在mode='predict'时有效
     #-------------------------------------------------------------------------#
@@ -34,10 +80,10 @@ if __name__ == "__main__":
                        "cow", "diningtable", "dog", "horse", "motorbike", "person", "pottedplant", "sheep", "sofa", "train", "tvmonitor"]
     # name_classes    = ["background","cat","dog"]
     #----------------------------------------------------------------------------------------------------------#
-    #   video_path          用于指定视频的路径，当video_path=0时表示检测摄像头
-    #                       想要检测视频，则设置如video_path = "xxx.mp4"即可，代表读取出根目录下的xxx.mp4文件。
-    #   video_save_path     表示视频保存的路径，当video_save_path=""时表示不保存
-    #                       想要保存视频，则设置如video_save_path = "yyy.mp4"即可，代表保存为根目录下的yyy.mp4文件。
+    #   video_path          用于指定视频的路径, 当video_path=0时表示检测摄像头
+    #                       想要检测视频, 则设置如video_path = "xxx.mp4"即可, 代表读取出根目录下的xxx.mp4文件。
+    #   video_save_path     表示视频保存的路径, 当video_save_path=""时表示不保存
+    #                       想要保存视频, 则设置如video_save_path = "yyy.mp4"即可, 代表保存为根目录下的yyy.mp4文件。
     #   video_fps           用于保存的视频的fps
     #
     #   video_path、video_save_path和video_fps仅在mode='video'时有效
@@ -47,7 +93,7 @@ if __name__ == "__main__":
     video_save_path = "result_vid/nycu.mp4"
     video_fps       = 25.0
     #----------------------------------------------------------------------------------------------------------#
-    #   test_interval       用于指定测量fps的时候，图片检测的次数。理论上test_interval越大，fps越准确。
+    #   test_interval       用于指定测量fps的时候, 图片检测的次数。理论上test_interval越大, fps越准确。
     #   fps_image_path      用于指定测试的fps图片
     #   
     #   test_interval和fps_image_path仅在mode='fps'有效
@@ -59,6 +105,7 @@ if __name__ == "__main__":
     #   dir_save_path       指定了检测完图片的保存路径
     #   
     #   dir_origin_path和dir_save_path仅在mode='dir_predict'时有效
+    #   mode = 'dir_predict' = choose input image with directory path, not typing the file name
     #-------------------------------------------------------------------------#
     dir_origin_path = "img/"
     dir_save_path   = "img_out/"
@@ -67,16 +114,16 @@ if __name__ == "__main__":
     #   onnx_save_path      指定了onnx的保存路径
     #-------------------------------------------------------------------------#
     simplify        = True
-    onnx_save_path  = "model_data/models.onnx"
+    onnx_save_path  = "model_data/mobilenetv2.onnx"
 
     if mode == "predict":
         '''
         predict.py有几个注意点
-        1、该代码无法直接进行批量预测，如果想要批量预测，可以利用os.listdir()遍历文件夹，利用Image.open打开图片文件进行预测。
-        具体流程可以参考get_miou_prediction.py，在get_miou_prediction.py即实现了遍历。
-        2、如果想要保存，利用r_image.save("img.jpg")即可保存。
-        3、如果想要原图和分割图不混合，可以把blend参数设置成False。
-        4、如果想根据mask获取对应的区域，可以参考detect_image函数中，利用预测结果绘图的部分，判断每一个像素点的种类，然后根据种类获取对应的部分。
+        1、该代码无法直接进行批量预测, 如果想要批量预测, 可以利用os.listdir()遍历文件夹, 利用Image.open打开图片文件进行预测。
+        具体流程可以参考get_miou_prediction.py, 在get_miou_prediction.py即实现了遍历。
+        2、如果想要保存, 利用r_image.save("img.jpg")即可保存。
+        3、如果想要原图和分割图不混合, 可以把blend参数设置成False。
+        4、如果想根据mask获取对应的区域, 可以参考detect_image函数中, 利用预测结果绘图的部分, 判断每一个像素点的种类, 然后根据种类获取对应的部分。
         seg_img = np.zeros((np.shape(pr)[0],np.shape(pr)[1],3))
         for c in range(self.num_classes):
             seg_img[:, :, 0] += ((pr == c)*( self.colors[c][0] )).astype('uint8')
@@ -104,7 +151,7 @@ if __name__ == "__main__":
 
         ref, frame = capture.read()
         if not ref:
-            raise ValueError("未能正确读取摄像头（视频），请注意是否正确安装摄像头（是否正确填写视频路径）。")
+            raise ValueError("未能正确读取摄像头（视频）, 请注意是否正确安装摄像头（是否正确填写视频路径）。")
 
         fps = 0.0
         while(True):
@@ -113,7 +160,7 @@ if __name__ == "__main__":
             ref, frame = capture.read()
             if not ref:
                 break
-            # 格式转变，BGRtoRGB
+            # 格式转变, BGRtoRGB
             frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
             # 转变成Image
             frame = Image.fromarray(np.uint8(frame))
@@ -142,6 +189,7 @@ if __name__ == "__main__":
         # print the mean fps
         mean_fps = np.mean(fps_arr)
         print("mean fps= %.2f"%(mean_fps))
+
         if video_save_path!="":
             print("Save processed video to the path :" + video_save_path)
             out.release()
@@ -165,8 +213,63 @@ if __name__ == "__main__":
                 if not os.path.exists(dir_save_path):
                     os.makedirs(dir_save_path)
                 r_image.save(os.path.join(dir_save_path, img_name))
+    
     elif mode == "export_onnx":
         deeplab.convert_to_onnx(simplify, onnx_save_path)
+
+    elif mode == "predict_with_onnx":
+        model_path = 'model_data/mobilenetv2.onnx'
+        onnx_model = onnx.load(model_path)
+        onnx.checker.check_model(onnx_model)
+
+        image = Image.open("img/street.jpg") # type = PIL.Image.Image
+
+        image = cvtColor(image)
+        image, nw, nh = resize_image(image, (512,512))
+        image  = np.expand_dims(np.transpose(preprocess_input(np.array(image, np.float32)), (2, 0, 1)), 0)
+        image = torch.from_numpy(image)
+        image = image.numpy()
+        sess = rt.InferenceSession(model_path, providers=['CUDAExecutionProvider'])
+        input_name1 = sess.get_inputs()[0].name
+        output = sess.run(None, {input_name1: image})[0] # image must be ndarray type
+        mask = output2image(output)
+        mask.show()
+
+    elif mode == "predict_with_tensorrt":  
+        # reference: https://zhuanlan.zhihu.com/p/371239130
+        # While you can compare the input/output shape with the Onnx model using Netron
+        # Netron: https://netron.app/
+
+        # Load Engine
+        model = "model_data/mobilenetv22.trt"
+        logger = trt.Logger(trt.Logger.INFO)
+        with open(model, "rb") as f, trt.Runtime(logger) as runtime:
+            engine=runtime.deserialize_cuda_engine(f.read())
         
+        for i in range(engine.num_bindings):
+            is_input = engine.binding_is_input(i)
+            name = engine.get_binding_name(i)
+            op_type = engine.get_binding_dtype(i)
+            shape = engine.get_binding_shape(i)
+            print('input id:', i, "     is input: ", is_input, "    binding name: ", name, " shape: ", shape, "   type: ", op_type)
+
+        # Inference
+        image = Image.open("img/street.jpg")
+        # Save the original image for later mixing
+        old_img = copy.deepcopy(image)
+        old_img = Image.fromarray(np.uint8(old_img))
+        old_img = resize_image(image, (512,512))[0]
+
+        image = cvtColor(image)
+        image = resize_image(image, (512,512))[0]
+        image  = np.expand_dims(np.transpose(preprocess_input(np.array(image, np.float32)), (2, 0, 1)), 0)
+        image = torch.from_numpy(image).cuda()
+        trt_model = TRTModule(engine, input_names=["images"], output_names=["output"])
+        pr_trt = trt_model(image) # (1, 21, 512, 512)
+        mask = output2image(pr_trt)
+        image   = Image.blend(old_img, mask, 0.7)
+        image.show()
+
     else:
         raise AssertionError("Please specify the correct mode: 'predict', 'video', 'fps' or 'dir_predict'.")
+
